@@ -13,6 +13,8 @@
       </p>
     </section>
 
+    <section style="height: 500px;"></section>
+
     <section class="panel">
       <label class="label" for="editor">可编辑区域</label>
       <div
@@ -39,13 +41,13 @@
       </div>
 
       <p class="hint">
-        聚焦后在移动端触发 touch 交互时会临时隐藏 caret；`touchend` 或 `touchcancel` 后，会恢复显示当前聚焦状态下的光标，同时尽量保持键盘不收起。
+        聚焦后在移动端触发 touch 交互时会临时隐藏 caret；touchend 或 touchcancel 后，会根据光标位置恢复显示。若 caret 距离实际可视区域底部 150px 内，则会继续强制隐藏。
       </p>
     </section>
 
     <section class="panel panel-status">
       <h2>当前状态</h2>
-      <p>{{ shouldHideCaret ? "当前 touch 进行中，caret 已隐藏" : "当前无 touch 且编辑区保持聚焦时，caret 正常显示" }}</p>
+      <p>{{ statusText }}</p>
     </section>
 
     <section class="panel">
@@ -68,7 +70,7 @@
 </template>
 
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 const initialText =
   "这是一段可编辑文字。聚焦后滚动页面，让编辑区进入顶部 mask 区域，观察 iOS 下 caret 的显示效果。";
@@ -79,13 +81,134 @@ const maskRef = ref(null);
 const isFocused = ref(false);
 const shouldHideCaret = ref(false);
 const isTouchActive = ref(false);
+const isCaretNearViewportBottom = ref(false);
+const bottomThreshold = 50;
+
+let caretUpdateFrame = null;
+
+const statusText = computed(() => {
+  if (isTouchActive.value) {
+    return "当前 touch 进行中，caret 已隐藏";
+  }
+
+  if (isCaretNearViewportBottom.value) {
+    return `caret 距离实际可视区域底部 ${bottomThreshold}px 内，已强制隐藏`;
+  }
+
+  return "当前无 touch，且 caret 未接近可视区域底部时，caret 正常显示";
+});
 
 function syncCaretVisibility() {
-  shouldHideCaret.value = isFocused.value && isTouchActive.value;
+  shouldHideCaret.value =
+    isFocused.value && (isTouchActive.value || isCaretNearViewportBottom.value);
 }
 
 function handleInput(event) {
   text.value = event.target.innerText;
+  scheduleCaretPositionUpdate();
+}
+
+function getViewportBottom() {
+  if (window.visualViewport) {
+    return window.visualViewport.offsetTop + window.visualViewport.height;
+  }
+
+  return window.innerHeight;
+}
+
+function getCaretRange(selection) {
+  const editor = editorRef.value;
+  const focusNode = selection.focusNode;
+
+  if (!editor || !focusNode || !editor.contains(focusNode)) {
+    return null;
+  }
+
+  const range = document.createRange();
+  range.setStart(focusNode, selection.focusOffset);
+  range.collapse(true);
+  return range;
+}
+
+function isUsefulRect(rect) {
+  return rect && (rect.width > 0 || rect.height > 0);
+}
+
+function getCaretRectWithMarker(range, selection) {
+  const marker = document.createElement("span");
+  const originalRange = range.cloneRange();
+  const markerRange = range.cloneRange();
+
+  marker.textContent = "\u200b";
+  marker.style.cssText =
+    "display:inline-block;width:0;height:1em;overflow:hidden;line-height:1;vertical-align:baseline;";
+
+  markerRange.insertNode(marker);
+  const rect = marker.getBoundingClientRect();
+  marker.remove();
+
+  selection.removeAllRanges();
+  selection.addRange(originalRange);
+
+  return rect;
+}
+
+function getCaretRect() {
+  const selection = window.getSelection();
+
+  if (!selection || selection.rangeCount === 0) {
+    return null;
+  }
+
+  const range = getCaretRange(selection);
+
+  if (!range) {
+    return null;
+  }
+
+  const rect = range.getBoundingClientRect();
+
+  if (isUsefulRect(rect)) {
+    return rect;
+  }
+
+  const clientRects = range.getClientRects();
+
+  if (clientRects.length > 0 && isUsefulRect(clientRects[clientRects.length - 1])) {
+    return clientRects[clientRects.length - 1];
+  }
+
+  return getCaretRectWithMarker(range, selection);
+}
+
+function updateCaretPositionState() {
+  if (!isFocused.value) {
+    isCaretNearViewportBottom.value = false;
+    syncCaretVisibility();
+    return;
+  }
+
+  const caretRect = getCaretRect();
+
+  if (!caretRect || !isUsefulRect(caretRect)) {
+    isCaretNearViewportBottom.value = false;
+    syncCaretVisibility();
+    return;
+  }
+
+  isCaretNearViewportBottom.value = getViewportBottom() - caretRect.bottom <= bottomThreshold;
+  syncCaretVisibility();
+}
+
+function scheduleCaretPositionUpdate() {
+  if (caretUpdateFrame !== null) {
+    window.cancelAnimationFrame(caretUpdateFrame);
+  }
+
+  caretUpdateFrame = window.requestAnimationFrame(() => {
+    caretUpdateFrame = null;
+    updateCaretPositionState();
+  });
 }
 
 function startInteraction() {
@@ -95,23 +218,24 @@ function startInteraction() {
 
 function endInteraction() {
   isTouchActive.value = false;
-  syncCaretVisibility();
+  scheduleCaretPositionUpdate();
 }
 
 function handleFocus() {
   isFocused.value = true;
-  syncCaretVisibility();
+  scheduleCaretPositionUpdate();
 }
 
 function handleBlur() {
   isFocused.value = false;
+  isCaretNearViewportBottom.value = false;
   shouldHideCaret.value = false;
 }
 
 async function focusEditor() {
   await nextTick();
   editorRef.value?.focus();
-  syncCaretVisibility();
+  scheduleCaretPositionUpdate();
 }
 
 async function resetText() {
@@ -121,22 +245,32 @@ async function resetText() {
   if (editorRef.value) {
     editorRef.value.innerText = initialText;
     editorRef.value.focus();
-    syncCaretVisibility();
+    scheduleCaretPositionUpdate();
   }
 }
 
 onMounted(() => {
+  document.addEventListener("selectionchange", scheduleCaretPositionUpdate);
   window.addEventListener("touchstart", startInteraction, { passive: true });
   window.addEventListener("touchmove", startInteraction, { passive: true });
   window.addEventListener("touchend", endInteraction, { passive: true });
   window.addEventListener("touchcancel", endInteraction, { passive: true });
+  window.visualViewport?.addEventListener("resize", scheduleCaretPositionUpdate, { passive: true });
+  window.visualViewport?.addEventListener("scroll", scheduleCaretPositionUpdate, { passive: true });
   focusEditor();
 });
 
 onBeforeUnmount(() => {
+  if (caretUpdateFrame !== null) {
+    window.cancelAnimationFrame(caretUpdateFrame);
+  }
+
+  document.removeEventListener("selectionchange", scheduleCaretPositionUpdate);
   window.removeEventListener("touchstart", startInteraction);
   window.removeEventListener("touchmove", startInteraction);
   window.removeEventListener("touchend", endInteraction);
   window.removeEventListener("touchcancel", endInteraction);
+  window.visualViewport?.removeEventListener("resize", scheduleCaretPositionUpdate);
+  window.visualViewport?.removeEventListener("scroll", scheduleCaretPositionUpdate);
 });
 </script>
