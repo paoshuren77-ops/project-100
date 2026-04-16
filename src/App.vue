@@ -39,13 +39,13 @@
       </div>
 
       <p class="hint">
-        聚焦后向上滚动，让编辑区进入顶部遮罩区域。进入遮罩区域时会隐藏 caret，模拟“被遮住”的视觉效果，同时尽量保持键盘不收起。
+        聚焦后在移动端触发 touch 交互时会临时隐藏 caret；`touchend` 或 `touchcancel` 后，会恢复显示当前聚焦状态下的光标，同时尽量保持键盘不收起。
       </p>
     </section>
 
     <section class="panel panel-status">
       <h2>当前状态</h2>
-      <p>{{ shouldHideCaret ? "编辑区进入遮罩区域，caret 已隐藏" : "编辑区未进入遮罩区域，caret 正常显示" }}</p>
+      <p>{{ shouldHideCaret ? "当前 touch 进行中，caret 已隐藏" : "当前无 touch 且编辑区保持聚焦时，caret 正常显示" }}</p>
     </section>
 
     <section class="panel">
@@ -78,28 +78,29 @@ const editorRef = ref(null);
 const maskRef = ref(null);
 const isFocused = ref(false);
 const shouldHideCaret = ref(false);
+const isTouchActive = ref(false);
+
+function syncCaretVisibility() {
+  shouldHideCaret.value = isFocused.value && isTouchActive.value;
+}
 
 function handleInput(event) {
   text.value = event.target.innerText;
 }
 
-function updateMaskState() {
-  const editor = editorRef.value;
-  const mask = maskRef.value;
+function startInteraction() {
+  isTouchActive.value = true;
+  syncCaretVisibility();
+}
 
-  if (!editor || !mask || !isFocused.value) {
-    shouldHideCaret.value = false;
-    return;
-  }
-
-  const editorRect = editor.getBoundingClientRect();
-  const maskRect = mask.getBoundingClientRect();
-  shouldHideCaret.value = editorRect.top < maskRect.bottom && editorRect.bottom > maskRect.top;
+function endInteraction() {
+  isTouchActive.value = false;
+  syncCaretVisibility();
 }
 
 function handleFocus() {
   isFocused.value = true;
-  updateMaskState();
+  syncCaretVisibility();
 }
 
 function handleBlur() {
@@ -110,7 +111,7 @@ function handleBlur() {
 async function focusEditor() {
   await nextTick();
   editorRef.value?.focus();
-  updateMaskState();
+  syncCaretVisibility();
 }
 
 async function resetText() {
@@ -120,18 +121,22 @@ async function resetText() {
   if (editorRef.value) {
     editorRef.value.innerText = initialText;
     editorRef.value.focus();
-    updateMaskState();
+    syncCaretVisibility();
   }
 }
 
 onMounted(() => {
-  window.addEventListener("scroll", updateMaskState, { passive: true });
-  window.addEventListener("resize", updateMaskState, { passive: true });
+  window.addEventListener("touchstart", startInteraction, { passive: true });
+  window.addEventListener("touchmove", startInteraction, { passive: true });
+  window.addEventListener("touchend", endInteraction, { passive: true });
+  window.addEventListener("touchcancel", endInteraction, { passive: true });
   focusEditor();
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("scroll", updateMaskState);
-  window.removeEventListener("resize", updateMaskState);
+  window.removeEventListener("touchstart", startInteraction);
+  window.removeEventListener("touchmove", startInteraction);
+  window.removeEventListener("touchend", endInteraction);
+  window.removeEventListener("touchcancel", endInteraction);
 });
 </script>
