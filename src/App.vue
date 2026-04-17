@@ -83,12 +83,13 @@ const shouldHideCaret = ref(false);
 const isTouchActive = ref(false);
 const isCaretNearViewportBottom = ref(false);
 const bottomThreshold = 50;
-const keyboardSafePadding = 24;
-const focusScrollRetryDelays = [0, 80, 180, 320, 520];
+const keyboardSafeGap = 24;
+const focusScrollDelays = [0, 60, 140, 260, 420, 680, 900];
 
 let caretUpdateFrame = null;
-let editorScrollFrame = null;
+let focusScrollFrame = null;
 let focusScrollTimers = [];
+let focusScrollUntil = 0;
 
 const statusText = computed(() => {
   if (isTouchActive.value) {
@@ -110,7 +111,6 @@ function syncCaretVisibility() {
 function handleInput(event) {
   text.value = event.target.innerText;
   scheduleCaretPositionUpdate();
-  scheduleEditorViewportScroll();
 }
 
 function getViewportBottom() {
@@ -119,6 +119,14 @@ function getViewportBottom() {
   }
 
   return window.innerHeight;
+}
+
+function getViewportTop() {
+  return window.visualViewport?.offsetTop ?? 0;
+}
+
+function getMaskBottom() {
+  return maskRef.value?.getBoundingClientRect().bottom ?? 0;
 }
 
 function getCaretRange(selection) {
@@ -205,83 +213,91 @@ function updateCaretPositionState() {
   syncCaretVisibility();
 }
 
-function getViewportTop() {
-  if (window.visualViewport) {
-    return window.visualViewport.offsetTop;
-  }
-
-  return 0;
-}
-
-function scrollDocumentBy(delta) {
+function scrollPageBy(delta) {
   if (Math.abs(delta) < 1) {
     return;
   }
 
-  window.scrollBy({
-    top: delta,
+  window.scrollTo({
+    top: window.scrollY + delta,
     behavior: "auto",
   });
 }
 
-function getEditorScrollRect() {
-  const caretRect = getCaretRect();
+function adjustEditorIntoVisualViewport() {
+  const editor = editorRef.value;
 
-  if (caretRect && isUsefulRect(caretRect)) {
-    return caretRect;
-  }
-
-  return editorRef.value?.getBoundingClientRect() ?? null;
-}
-
-function keepEditorInVisualViewport() {
-  if (!isFocused.value || !editorRef.value) {
+  if (!isFocused.value || !editor) {
     return;
   }
 
-  const rect = getEditorScrollRect();
+  const rect = editor.getBoundingClientRect();
 
-  if (!rect || !isUsefulRect(rect)) {
+  if (!isUsefulRect(rect)) {
     return;
   }
 
-  const safeTop = getViewportTop() + keyboardSafePadding;
-  const safeBottom = getViewportBottom() - keyboardSafePadding;
+  const safeTop = Math.max(getViewportTop(), getMaskBottom()) + keyboardSafeGap;
+  const safeBottom = getViewportBottom() - keyboardSafeGap;
+  const safeHeight = safeBottom - safeTop;
+
+  if (safeHeight <= 0) {
+    return;
+  }
+
+  if (rect.height > safeHeight && rect.top !== safeTop) {
+    scrollPageBy(rect.top - safeTop);
+    return;
+  }
 
   if (rect.bottom > safeBottom) {
-    scrollDocumentBy(rect.bottom - safeBottom);
+    scrollPageBy(rect.bottom - safeBottom);
     return;
   }
 
   if (rect.top < safeTop) {
-    scrollDocumentBy(rect.top - safeTop);
+    scrollPageBy(rect.top - safeTop);
   }
 }
 
-function scheduleEditorViewportScroll() {
-  if (editorScrollFrame !== null) {
-    window.cancelAnimationFrame(editorScrollFrame);
+function scheduleFocusScroll() {
+  if (focusScrollFrame !== null) {
+    window.cancelAnimationFrame(focusScrollFrame);
   }
 
-  editorScrollFrame = window.requestAnimationFrame(() => {
-    editorScrollFrame = null;
-    keepEditorInVisualViewport();
+  focusScrollFrame = window.requestAnimationFrame(() => {
+    focusScrollFrame = null;
+    adjustEditorIntoVisualViewport();
   });
 }
 
-function clearFocusScrollRetries() {
+function clearFocusScrollTimers() {
   focusScrollTimers.forEach((timer) => window.clearTimeout(timer));
   focusScrollTimers = [];
 }
 
-function scheduleFocusScrollRetries() {
-  clearFocusScrollRetries();
-  focusScrollTimers = focusScrollRetryDelays.map((delay) =>
-    window.setTimeout(() => {
-      scheduleCaretPositionUpdate();
-      scheduleEditorViewportScroll();
-    }, delay),
+function startFocusScrollWindow() {
+  clearFocusScrollTimers();
+  focusScrollUntil = Date.now() + focusScrollDelays[focusScrollDelays.length - 1];
+  focusScrollTimers = focusScrollDelays.map((delay) =>
+    window.setTimeout(scheduleFocusScroll, delay),
   );
+}
+
+function handleViewportChange() {
+  scheduleCaretPositionUpdate();
+
+  if (isFocused.value && Date.now() <= focusScrollUntil) {
+    scheduleFocusScroll();
+  }
+}
+
+function focusEditableElement(editor) {
+  try {
+    editor.focus({ preventScroll: true });
+  } catch {
+    editor.focus();
+  }
 }
 
 function scheduleCaretPositionUpdate() {
@@ -303,27 +319,31 @@ function startInteraction() {
 function endInteraction() {
   isTouchActive.value = false;
   scheduleCaretPositionUpdate();
-  scheduleEditorViewportScroll();
 }
 
 function handleFocus() {
   isFocused.value = true;
   scheduleCaretPositionUpdate();
-  scheduleFocusScrollRetries();
+  startFocusScrollWindow();
 }
 
 function handleBlur() {
   isFocused.value = false;
   isCaretNearViewportBottom.value = false;
   shouldHideCaret.value = false;
-  clearFocusScrollRetries();
+  focusScrollUntil = 0;
+  clearFocusScrollTimers();
 }
 
 async function focusEditor() {
   await nextTick();
-  editorRef.value?.focus();
-  scheduleCaretPositionUpdate();
-  scheduleFocusScrollRetries();
+  const editor = editorRef.value;
+
+  if (editor) {
+    focusEditableElement(editor);
+    scheduleCaretPositionUpdate();
+    startFocusScrollWindow();
+  }
 }
 
 async function resetText() {
@@ -332,23 +352,20 @@ async function resetText() {
 
   if (editorRef.value) {
     editorRef.value.innerText = initialText;
-    editorRef.value.focus();
+    focusEditableElement(editorRef.value);
     scheduleCaretPositionUpdate();
-    scheduleFocusScrollRetries();
+    startFocusScrollWindow();
   }
 }
 
 onMounted(() => {
   document.addEventListener("selectionchange", scheduleCaretPositionUpdate);
-  document.addEventListener("selectionchange", scheduleEditorViewportScroll);
   window.addEventListener("touchstart", startInteraction, { passive: true });
   window.addEventListener("touchmove", startInteraction, { passive: true });
   window.addEventListener("touchend", endInteraction, { passive: true });
   window.addEventListener("touchcancel", endInteraction, { passive: true });
-  window.visualViewport?.addEventListener("resize", scheduleCaretPositionUpdate, { passive: true });
-  window.visualViewport?.addEventListener("scroll", scheduleCaretPositionUpdate, { passive: true });
-  window.visualViewport?.addEventListener("resize", scheduleEditorViewportScroll, { passive: true });
-  window.visualViewport?.addEventListener("scroll", scheduleEditorViewportScroll, { passive: true });
+  window.visualViewport?.addEventListener("resize", handleViewportChange, { passive: true });
+  window.visualViewport?.addEventListener("scroll", handleViewportChange, { passive: true });
   focusEditor();
 });
 
@@ -357,20 +374,17 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(caretUpdateFrame);
   }
 
-  if (editorScrollFrame !== null) {
-    window.cancelAnimationFrame(editorScrollFrame);
+  if (focusScrollFrame !== null) {
+    window.cancelAnimationFrame(focusScrollFrame);
   }
 
-  clearFocusScrollRetries();
+  clearFocusScrollTimers();
   document.removeEventListener("selectionchange", scheduleCaretPositionUpdate);
-  document.removeEventListener("selectionchange", scheduleEditorViewportScroll);
   window.removeEventListener("touchstart", startInteraction);
   window.removeEventListener("touchmove", startInteraction);
   window.removeEventListener("touchend", endInteraction);
   window.removeEventListener("touchcancel", endInteraction);
-  window.visualViewport?.removeEventListener("resize", scheduleCaretPositionUpdate);
-  window.visualViewport?.removeEventListener("scroll", scheduleCaretPositionUpdate);
-  window.visualViewport?.removeEventListener("resize", scheduleEditorViewportScroll);
-  window.visualViewport?.removeEventListener("scroll", scheduleEditorViewportScroll);
+  window.visualViewport?.removeEventListener("resize", handleViewportChange);
+  window.visualViewport?.removeEventListener("scroll", handleViewportChange);
 });
 </script>
