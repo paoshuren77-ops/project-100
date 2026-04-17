@@ -82,8 +82,9 @@ const isFocused = ref(false);
 const shouldHideCaret = ref(false);
 const isTouchActive = ref(false);
 const isCaretNearViewportBottom = ref(false);
-const bottomThreshold = 50;
-const keyboardSafeGap = 24;
+const keyboardTopSafeGap = 24;
+const keyboardBottomSafeGap = 112;
+const bottomThreshold = keyboardBottomSafeGap;
 const focusScrollDelays = [0, 60, 140, 260, 420, 680, 900];
 
 let caretUpdateFrame = null;
@@ -237,8 +238,8 @@ function adjustEditorIntoVisualViewport() {
     return;
   }
 
-  const safeTop = Math.max(getViewportTop(), getMaskBottom()) + keyboardSafeGap;
-  const safeBottom = getViewportBottom() - keyboardSafeGap;
+  const safeTop = Math.max(getViewportTop(), getMaskBottom()) + keyboardTopSafeGap;
+  const safeBottom = getViewportBottom() - keyboardBottomSafeGap;
   const safeHeight = safeBottom - safeTop;
 
   if (safeHeight <= 0) {
