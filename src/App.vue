@@ -86,6 +86,7 @@ const keyboardTopSafeGap = 24;
 const keyboardBottomSafeGap = 112;
 const bottomThreshold = keyboardBottomSafeGap;
 const focusScrollDelays = [0, 60, 140, 260, 420, 680, 900];
+const scrollTolerance = 6;
 
 let caretUpdateFrame = null;
 let focusScrollFrame = null;
@@ -215,7 +216,7 @@ function updateCaretPositionState() {
 }
 
 function scrollPageBy(delta) {
-  if (Math.abs(delta) < 1) {
+  if (Math.abs(delta) <= scrollTolerance) {
     return;
   }
 
@@ -246,17 +247,35 @@ function adjustEditorIntoVisualViewport() {
     return;
   }
 
-  if (rect.height > safeHeight && rect.top !== safeTop) {
-    scrollPageBy(rect.top - safeTop);
+  if (rect.height >= safeHeight - scrollTolerance) {
+    const caretRect = getCaretRect();
+
+    if (caretRect && isUsefulRect(caretRect)) {
+      if (caretRect.bottom > safeBottom + scrollTolerance) {
+        scrollPageBy(caretRect.bottom - safeBottom);
+        return;
+      }
+
+      if (caretRect.top < safeTop - scrollTolerance) {
+        scrollPageBy(caretRect.top - safeTop);
+      }
+
+      return;
+    }
+
+    if (rect.top > safeTop + scrollTolerance) {
+      scrollPageBy(rect.top - safeTop);
+    }
+
     return;
   }
 
-  if (rect.bottom > safeBottom) {
+  if (rect.bottom > safeBottom + scrollTolerance) {
     scrollPageBy(rect.bottom - safeBottom);
     return;
   }
 
-  if (rect.top < safeTop) {
+  if (rect.top < safeTop - scrollTolerance) {
     scrollPageBy(rect.top - safeTop);
   }
 }
@@ -285,12 +304,16 @@ function startFocusScrollWindow() {
   );
 }
 
-function handleViewportChange() {
+function handleViewportResize() {
   scheduleCaretPositionUpdate();
 
   if (isFocused.value && Date.now() <= focusScrollUntil) {
     scheduleFocusScroll();
   }
+}
+
+function handleViewportScroll() {
+  scheduleCaretPositionUpdate();
 }
 
 function focusEditableElement(editor) {
@@ -365,8 +388,8 @@ onMounted(() => {
   window.addEventListener("touchmove", startInteraction, { passive: true });
   window.addEventListener("touchend", endInteraction, { passive: true });
   window.addEventListener("touchcancel", endInteraction, { passive: true });
-  window.visualViewport?.addEventListener("resize", handleViewportChange, { passive: true });
-  window.visualViewport?.addEventListener("scroll", handleViewportChange, { passive: true });
+  window.visualViewport?.addEventListener("resize", handleViewportResize, { passive: true });
+  window.visualViewport?.addEventListener("scroll", handleViewportScroll, { passive: true });
   focusEditor();
 });
 
@@ -385,7 +408,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("touchmove", startInteraction);
   window.removeEventListener("touchend", endInteraction);
   window.removeEventListener("touchcancel", endInteraction);
-  window.visualViewport?.removeEventListener("resize", handleViewportChange);
-  window.visualViewport?.removeEventListener("scroll", handleViewportChange);
+  window.visualViewport?.removeEventListener("resize", handleViewportResize);
+  window.visualViewport?.removeEventListener("scroll", handleViewportScroll);
 });
 </script>
