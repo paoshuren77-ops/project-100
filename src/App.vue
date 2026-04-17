@@ -1,8 +1,8 @@
 <template>
   <main class="page">
-    <div ref="maskRef" class="mask">
+    <!-- <div ref="maskRef" class="mask">
       <div class="mask__label">Fixed mask</div>
-    </div>
+    </div> -->
 
     <section class="hero">
       <p class="eyebrow">Vue 3 + contenteditable</p>
@@ -86,6 +86,7 @@ const keyboardTopSafeGap = 24;
 const keyboardBottomSafeGap = 112;
 const bottomThreshold = keyboardBottomSafeGap;
 const focusScrollDelays = [0, 60, 140, 260, 420, 680, 900];
+const largeEditorCaretTargetRatio = 0.66;
 const scrollTolerance = 6;
 
 let caretUpdateFrame = null;
@@ -248,24 +249,19 @@ function adjustEditorIntoVisualViewport() {
   }
 
   if (rect.height >= safeHeight - scrollTolerance) {
-    if (rect.top > safeTop + scrollTolerance) {
-      scrollPageBy(rect.top - safeTop);
-      return;
-    }
-
     const caretRect = getCaretRect();
 
     if (caretRect && isUsefulRect(caretRect)) {
-      if (caretRect.bottom > safeBottom + scrollTolerance) {
-        scrollPageBy(caretRect.bottom - safeBottom);
-        return;
-      }
-
-      if (caretRect.top < safeTop - scrollTolerance) {
-        scrollPageBy(caretRect.top - safeTop);
-      }
-
+      const targetCaretBottom = Math.min(
+        safeBottom,
+        safeTop + safeHeight * largeEditorCaretTargetRatio,
+      );
+      scrollPageBy(caretRect.bottom - targetCaretBottom);
       return;
+    }
+
+    if (rect.top > safeTop + scrollTolerance) {
+      scrollPageBy(rect.top - safeTop);
     }
 
     return;
