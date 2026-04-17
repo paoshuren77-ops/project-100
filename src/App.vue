@@ -85,14 +85,17 @@ const isCaretNearViewportBottom = ref(false);
 const keyboardTopSafeGap = 24;
 const keyboardBottomSafeGap = 112;
 const bottomThreshold = keyboardBottomSafeGap;
-const focusScrollDelays = [0, 60, 140, 260, 420, 680, 900];
-const largeEditorCaretTargetRatio = 0.66;
+const keyboardSettleDelay = 140;
+const keyboardFallbackDelay = 850;
+const caretTargetRatio = 0.66;
 const scrollTolerance = 6;
 
 let caretUpdateFrame = null;
 let focusScrollFrame = null;
-let focusScrollTimers = [];
-let focusScrollUntil = 0;
+let keyboardSettleTimer = null;
+let keyboardFallbackTimer = null;
+let isKeyboardAdjustmentPending = false;
+let hasKeyboardAdjustmentRun = false;
 
 const statusText = computed(() => {
   if (isTouchActive.value) {
@@ -227,6 +230,22 @@ function scrollPageBy(delta) {
   });
 }
 
+function getSafeViewportArea() {
+  const safeTop = Math.max(getViewportTop(), getMaskBottom()) + keyboardTopSafeGap;
+  const safeBottom = getViewportBottom() - keyboardBottomSafeGap;
+  const safeHeight = safeBottom - safeTop;
+
+  return {
+    safeTop,
+    safeBottom,
+    safeHeight,
+  };
+}
+
+function getCaretTargetBottom(safeTop, safeBottom, safeHeight) {
+  return Math.min(safeBottom, safeTop + safeHeight * caretTargetRatio);
+}
+
 function adjustEditorIntoVisualViewport() {
   const editor = editorRef.value;
 
@@ -240,28 +259,22 @@ function adjustEditorIntoVisualViewport() {
     return;
   }
 
-  const safeTop = Math.max(getViewportTop(), getMaskBottom()) + keyboardTopSafeGap;
-  const safeBottom = getViewportBottom() - keyboardBottomSafeGap;
-  const safeHeight = safeBottom - safeTop;
+  const { safeTop, safeBottom, safeHeight } = getSafeViewportArea();
 
   if (safeHeight <= 0) {
     return;
   }
 
-  if (rect.height >= safeHeight - scrollTolerance) {
-    const caretRect = getCaretRect();
+  const caretRect = getCaretRect();
 
-    if (caretRect && isUsefulRect(caretRect)) {
-      const targetCaretBottom = Math.min(
-        safeBottom,
-        safeTop + safeHeight * largeEditorCaretTargetRatio,
-      );
+  if (caretRect && isUsefulRect(caretRect)) {
+    const targetCaretBottom = getCaretTargetBottom(safeTop, safeBottom, safeHeight);
+    const shouldMoveLargeEditor = rect.height >= safeHeight - scrollTolerance;
+    const shouldMoveCaretDown = caretRect.top < safeTop - scrollTolerance;
+    const shouldMoveCaretUp = caretRect.bottom > safeBottom + scrollTolerance;
+
+    if (shouldMoveLargeEditor || shouldMoveCaretDown || shouldMoveCaretUp) {
       scrollPageBy(caretRect.bottom - targetCaretBottom);
-      return;
-    }
-
-    if (rect.top > safeTop + scrollTolerance) {
-      scrollPageBy(rect.top - safeTop);
     }
 
     return;
@@ -288,24 +301,59 @@ function scheduleFocusScroll() {
   });
 }
 
-function clearFocusScrollTimers() {
-  focusScrollTimers.forEach((timer) => window.clearTimeout(timer));
-  focusScrollTimers = [];
+function clearKeyboardAdjustmentTimers() {
+  if (keyboardSettleTimer !== null) {
+    window.clearTimeout(keyboardSettleTimer);
+    keyboardSettleTimer = null;
+  }
+
+  if (keyboardFallbackTimer !== null) {
+    window.clearTimeout(keyboardFallbackTimer);
+    keyboardFallbackTimer = null;
+  }
 }
 
-function startFocusScrollWindow() {
-  clearFocusScrollTimers();
-  focusScrollUntil = Date.now() + focusScrollDelays[focusScrollDelays.length - 1];
-  focusScrollTimers = focusScrollDelays.map((delay) =>
-    window.setTimeout(scheduleFocusScroll, delay),
-  );
+function runKeyboardAdjustmentOnce() {
+  if (!isFocused.value || !isKeyboardAdjustmentPending || hasKeyboardAdjustmentRun) {
+    return;
+  }
+
+  isKeyboardAdjustmentPending = false;
+  hasKeyboardAdjustmentRun = true;
+  clearKeyboardAdjustmentTimers();
+  scheduleFocusScroll();
+}
+
+function scheduleKeyboardSettleAdjustment() {
+  if (!isKeyboardAdjustmentPending || hasKeyboardAdjustmentRun) {
+    return;
+  }
+
+  if (keyboardSettleTimer !== null) {
+    window.clearTimeout(keyboardSettleTimer);
+  }
+
+  keyboardSettleTimer = window.setTimeout(() => {
+    keyboardSettleTimer = null;
+    runKeyboardAdjustmentOnce();
+  }, keyboardSettleDelay);
+}
+
+function startKeyboardAdjustmentWait() {
+  clearKeyboardAdjustmentTimers();
+  isKeyboardAdjustmentPending = true;
+  hasKeyboardAdjustmentRun = false;
+  keyboardFallbackTimer = window.setTimeout(() => {
+    keyboardFallbackTimer = null;
+    runKeyboardAdjustmentOnce();
+  }, keyboardFallbackDelay);
 }
 
 function handleViewportResize() {
   scheduleCaretPositionUpdate();
 
-  if (isFocused.value && Date.now() <= focusScrollUntil) {
-    scheduleFocusScroll();
+  if (isFocused.value) {
+    scheduleKeyboardSettleAdjustment();
   }
 }
 
@@ -345,15 +393,15 @@ function endInteraction() {
 function handleFocus() {
   isFocused.value = true;
   scheduleCaretPositionUpdate();
-  startFocusScrollWindow();
+  startKeyboardAdjustmentWait();
 }
 
 function handleBlur() {
   isFocused.value = false;
   isCaretNearViewportBottom.value = false;
   shouldHideCaret.value = false;
-  focusScrollUntil = 0;
-  clearFocusScrollTimers();
+  isKeyboardAdjustmentPending = false;
+  clearKeyboardAdjustmentTimers();
 }
 
 async function focusEditor() {
@@ -363,7 +411,7 @@ async function focusEditor() {
   if (editor) {
     focusEditableElement(editor);
     scheduleCaretPositionUpdate();
-    startFocusScrollWindow();
+    startKeyboardAdjustmentWait();
   }
 }
 
@@ -375,7 +423,7 @@ async function resetText() {
     editorRef.value.innerText = initialText;
     focusEditableElement(editorRef.value);
     scheduleCaretPositionUpdate();
-    startFocusScrollWindow();
+    startKeyboardAdjustmentWait();
   }
 }
 
@@ -399,7 +447,7 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(focusScrollFrame);
   }
 
-  clearFocusScrollTimers();
+  clearKeyboardAdjustmentTimers();
   document.removeEventListener("selectionchange", scheduleCaretPositionUpdate);
   window.removeEventListener("touchstart", startInteraction);
   window.removeEventListener("touchmove", startInteraction);
