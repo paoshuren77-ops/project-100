@@ -248,6 +248,11 @@ function adjustEditorIntoVisualViewport() {
   }
 
   if (rect.height >= safeHeight - scrollTolerance) {
+    if (rect.top > safeTop + scrollTolerance) {
+      scrollPageBy(rect.top - safeTop);
+      return;
+    }
+
     const caretRect = getCaretRect();
 
     if (caretRect && isUsefulRect(caretRect)) {
@@ -261,10 +266,6 @@ function adjustEditorIntoVisualViewport() {
       }
 
       return;
-    }
-
-    if (rect.top > safeTop + scrollTolerance) {
-      scrollPageBy(rect.top - safeTop);
     }
 
     return;
